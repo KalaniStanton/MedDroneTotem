@@ -1,6 +1,4 @@
-def main():
-    print("Hello from meddronetotem!")
-
+from core.engine import ModeManager
 
 if __name__ == "__main__":
-    main()
+    ModeManager().run()
