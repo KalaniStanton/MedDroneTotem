@@ -109,43 +109,46 @@ class AudioVisualizerMode(Mode):
         bass_r = int(BASS_R_MIN + (BASS_R_MAX - BASS_R_MIN) * bass_mag)
 
         # --- Frequency bars (drawn before circle so circle covers the roots) ---
-        # Bar i maps to angle: π → 0 (left edge to right edge, across the top)
-        # Top semicircle:    y = CY - r * sin(angle)   (upward)
-        # Bottom semicircle: y = CY + r * sin(angle)   (downward, mirrored)
+        # Angles sweep from -π/2 (bottom) to +π/2 (top).
+        # Bar 0 (lowest freq) is at the bottom junction; bar N-1 (highest) at the top.
+        # Right arc: (CX + r*cos(a), CY - r*sin(a))
+        # Left arc:  (CX - r*cos(a), CY - r*sin(a))  — mirror across the vertical axis
+        # Junction points (cos_a ≈ 0) are at top/bottom; drawn once to avoid overlap.
         for i in range(N_BARS):
-            angle = math.pi - (i / (N_BARS - 1)) * math.pi
+            angle = -math.pi / 2 + (i / (N_BARS - 1)) * math.pi
             cos_a = math.cos(angle)
             sin_a = math.sin(angle)
 
             bar_len = int(BAR_MAX_LEN * self._bars[i])
             peak_r = bass_r + int(BAR_MAX_LEN * self._peaks[i])
-            on_axis = sin_a < 0.01  # bar falls on the horizontal axis (i=0 or i=N-1)
+            on_axis = abs(cos_a) < 0.01  # top/bottom junction — skip mirror
 
-            # Top bar
-            sx = int(CX + bass_r * cos_a)
-            sy_t = int(CY - bass_r * sin_a)
-            ex = int(CX + (bass_r + bar_len) * cos_a)
-            ey_t = int(CY - (bass_r + bar_len) * sin_a)
+            sy = int(CY - bass_r * sin_a)
+            ey = int(CY - (bass_r + bar_len) * sin_a)
+
+            # Right arc
+            sx_r = int(CX + bass_r * cos_a)
+            ex_r = int(CX + (bass_r + bar_len) * cos_a)
 
             if bar_len > 1:
-                pygame.draw.line(screen, C_SHAPE, (sx, sy_t), (ex, ey_t), BAR_W)
-                pygame.draw.circle(screen, C_SHAPE, (ex, ey_t), BAR_W // 2)
+                pygame.draw.line(screen, C_SHAPE, (sx_r, sy), (ex_r, ey), BAR_W)
+                pygame.draw.circle(screen, C_SHAPE, (ex_r, ey), BAR_W // 2)
 
-            # Bottom mirror (skip the horizontal-axis bars to avoid duplicate)
+            # Left arc (skip when on the vertical axis — already drawn by right arc)
             if not on_axis and bar_len > 1:
-                sy_b = int(CY + bass_r * sin_a)
-                ey_b = int(CY + (bass_r + bar_len) * sin_a)
-                pygame.draw.line(screen, C_SHAPE, (sx, sy_b), (ex, ey_b), BAR_W)
-                pygame.draw.circle(screen, C_SHAPE, (ex, ey_b), BAR_W // 2)
+                sx_l = int(CX - bass_r * cos_a)
+                ex_l = int(CX - (bass_r + bar_len) * cos_a)
+                pygame.draw.line(screen, C_SHAPE, (sx_l, sy), (ex_l, ey), BAR_W)
+                pygame.draw.circle(screen, C_SHAPE, (ex_l, ey), BAR_W // 2)
 
-            # Peak dots (only when peak has separated from the bar)
+            # Peak dots (only when peak has separated from bar tip)
             if self._peaks[i] > self._bars[i] + 0.03:
-                px = int(CX + peak_r * cos_a)
-                py_t = int(CY - peak_r * sin_a)
-                pygame.draw.circle(screen, C_SHAPE, (px, py_t), PEAK_DOT_R)
+                py = int(CY - peak_r * sin_a)
+                px_r = int(CX + peak_r * cos_a)
+                pygame.draw.circle(screen, C_SHAPE, (px_r, py), PEAK_DOT_R)
                 if not on_axis:
-                    py_b = int(CY + peak_r * sin_a)
-                    pygame.draw.circle(screen, C_SHAPE, (px, py_b), PEAK_DOT_R)
+                    px_l = int(CX - peak_r * cos_a)
+                    pygame.draw.circle(screen, C_SHAPE, (px_l, py), PEAK_DOT_R)
 
         # --- Bass circle drawn on top of bar roots for a clean join ---
         pygame.draw.circle(screen, C_SHAPE, (CX, CY), bass_r)
