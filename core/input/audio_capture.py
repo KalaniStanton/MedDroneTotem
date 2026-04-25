@@ -1,20 +1,19 @@
 from __future__ import annotations
 import collections
-import threading
 
 import numpy as np
 import sounddevice as sd
 
 SAMPLE_RATE = 44100
-CHUNK = 1024
+CHUNK = 2048        # larger = better freq resolution (~21.5 Hz/bin)
+MIN_FREQ = 80       # Hz — skip DC and sub-bass
+MAX_FREQ = 14000    # Hz — cap at 14kHz
 
 
 class AudioCapture:
     def __init__(self):
-        self._buf: collections.deque[np.ndarray] = collections.deque(maxlen=8)
-        self._lock = threading.Lock()
         self._stream: sd.InputStream | None = None
-        self._latest = np.zeros(CHUNK)
+        self._latest = np.zeros(CHUNK, dtype="float32")
 
     def start(self):
         self._stream = sd.InputStream(
@@ -35,19 +34,40 @@ class AudioCapture:
     def _callback(self, indata: np.ndarray, frames, time_info, status):
         self._latest = indata[:, 0].copy()
 
-    def get_fft_bands(self, n_bands: int = 32) -> np.ndarray:
+    def get_fft_bands(self, n_bands: int = 24) -> np.ndarray:
         samples = self._latest
         windowed = samples * np.hanning(len(samples))
         spectrum = np.abs(np.fft.rfft(windowed))
-        spectrum = spectrum[: len(spectrum) // 2]
-        if len(spectrum) == 0:
+
+        nyquist = SAMPLE_RATE / 2
+        freq_per_bin = nyquist / len(spectrum)
+
+        min_bin = max(1, int(MIN_FREQ / freq_per_bin))
+        max_bin = min(len(spectrum) - 1, int(MAX_FREQ / freq_per_bin))
+
+        if max_bin <= min_bin:
             return np.zeros(n_bands)
-        bands = np.array_split(spectrum, n_bands)
-        magnitudes = np.array([b.mean() for b in bands])
+
+        # Log-spaced bin boundaries — low freqs get proportionally more bins
+        bounds = np.unique(
+            np.round(
+                np.logspace(np.log10(min_bin), np.log10(max_bin), n_bands + 1)
+            ).astype(int)
+        )
+
+        n_actual = len(bounds) - 1
+        magnitudes = np.zeros(n_bands)
+        for i in range(min(n_actual, n_bands)):
+            lo, hi = bounds[i], bounds[i + 1]
+            if hi > lo:
+                magnitudes[i] = spectrum[lo:hi].mean()
+
         peak = magnitudes.max()
-        if peak > 0:
-            magnitudes = magnitudes / peak
+        if peak > 1e-6:
+            magnitudes /= peak
+
         return magnitudes
 
-    def get_waveform(self) -> np.ndarray:
-        return self._latest.copy()
+    def get_amplitude(self) -> float:
+        """RMS amplitude of the latest chunk."""
+        return float(np.sqrt(np.mean(self._latest ** 2)))
