@@ -1,5 +1,6 @@
 from __future__ import annotations
 import collections
+import math
 import time
 
 import numpy as np
@@ -10,26 +11,32 @@ from core.input.audio_capture import AudioCapture
 from core.modes.base import Mode
 
 N_BARS = 24
-BAR_SLOT = W / N_BARS
-BAR_W = int(BAR_SLOT * 0.68)
-BAR_RADIUS = BAR_W // 2
-MAX_HALF_H = int(H * 0.40)
-CENTER_Y = H // 2
 
-# Bar smoothing — fast attack, slow decay (VU-meter feel)
+# Bass circle — radius pulses with low-end energy
+BASS_R_MIN = int(W * 0.13)   # smallest circle (silence)
+BASS_R_MAX = int(W * 0.20)   # largest circle (full bass)
+
+# Bars protruding from the circle edge
+BAR_MAX_LEN = int(W * 0.25)
+BAR_W = 13
+PEAK_DOT_R = 5
+
+CX, CY = W // 2, H // 2
+
+# Smoothing
 ATTACK = 0.45
 DECAY = 0.065
-PEAK_DECAY = 0.003   # peak markers fall slowly back to zero
+PEAK_DECAY = 0.003
 
 # Beat detection
-BEAT_WINDOW = 60     # rolling RMS history (frames)
-BEAT_MULT = 1.75     # spike must be this × rolling mean
-BEAT_COOLDOWN = 0.35 # seconds between rings
+BEAT_WINDOW = 60
+BEAT_MULT = 1.75
+BEAT_COOLDOWN = 0.35
 MAX_RINGS = 5
 
 # Ring expansion
-RING_SPEED = 270     # px / second
-RING_FADE = 1.3      # alpha units / second (ring life = 1 / RING_FADE)
+RING_SPEED = 270   # px/s
+RING_FADE = 1.3    # alpha/s
 
 
 def _lerp_color(c1, c2, t: float) -> tuple:
@@ -59,17 +66,17 @@ class AudioVisualizerMode(Mode):
         amp = self._capture.get_amplitude()
         now = time.time()
 
-        # Per-bar attack/decay smoothing
+        # Per-bar attack/decay
         rising = raw > self._bars
         self._bars[rising] += (raw[rising] - self._bars[rising]) * ATTACK
         self._bars[~rising] = np.maximum(0.0, self._bars[~rising] - DECAY)
 
-        # Peak markers: snap up instantly, drift down slowly
+        # Peak markers: snap up, drift down
         snap = self._bars > self._peaks
         self._peaks[snap] = self._bars[snap]
         self._peaks[~snap] = np.maximum(0.0, self._peaks[~snap] - PEAK_DECAY)
 
-        # Energy-based beat detection
+        # Beat detection
         self._amp_history.append(amp)
         if len(self._amp_history) > 10:
             mean_amp = float(np.mean(self._amp_history))
@@ -80,50 +87,68 @@ class AudioVisualizerMode(Mode):
                 self._rings.append({"t": now})
                 self._last_beat = now
 
-        # Expire fully-faded rings
         self._rings = [r for r in self._rings if now - r["t"] < 1.0 / RING_FADE]
-
         return None
 
     def draw(self, screen: pygame.Surface) -> None:
         screen.fill(C_BG_TOP)
         now = time.time()
 
-        # Beat rings — expand from center, fade toward background color
+        # --- Beat rings (behind everything) ---
         for ring in self._rings:
             elapsed = now - ring["t"]
             radius = int(RING_SPEED * elapsed)
             alpha = max(0.0, 1.0 - elapsed * RING_FADE)
             color = _lerp_color(C_BG_TOP, C_SHAPE, alpha)
-            line_w = max(1, int(3 * alpha))
+            width = max(1, int(3 * alpha))
             if 0 < radius < W:
-                pygame.draw.circle(screen, color, (W // 2, H // 2), radius, line_w)
+                pygame.draw.circle(screen, color, (CX, CY), radius, width)
 
-        # Symmetric bars + peak markers
+        # Bass circle radius driven by low-end energy
+        bass_mag = float(np.mean(self._bars[:3]))
+        bass_r = int(BASS_R_MIN + (BASS_R_MAX - BASS_R_MIN) * bass_mag)
+
+        # --- Frequency bars (drawn before circle so circle covers the roots) ---
+        # Bar i maps to angle: π → 0 (left edge to right edge, across the top)
+        # Top semicircle:    y = CY - r * sin(angle)   (upward)
+        # Bottom semicircle: y = CY + r * sin(angle)   (downward, mirrored)
         for i in range(N_BARS):
-            cx = int(BAR_SLOT * (i + 0.5))
-            half_h = int(MAX_HALF_H * self._bars[i])
-            peak_h = int(MAX_HALF_H * self._peaks[i])
+            angle = math.pi - (i / (N_BARS - 1)) * math.pi
+            cos_a = math.cos(angle)
+            sin_a = math.sin(angle)
 
-            if half_h > 1:
-                pygame.draw.rect(
-                    screen, C_SHAPE,
-                    (cx - BAR_W // 2, CENTER_Y - half_h, BAR_W, half_h * 2),
-                    border_radius=BAR_RADIUS,
-                )
+            bar_len = int(BAR_MAX_LEN * self._bars[i])
+            peak_r = bass_r + int(BAR_MAX_LEN * self._peaks[i])
+            on_axis = sin_a < 0.01  # bar falls on the horizontal axis (i=0 or i=N-1)
 
-            # Peak dots: small pill above and below bar
-            if peak_h > half_h + 2:
-                pygame.draw.rect(
-                    screen, C_SHAPE,
-                    (cx - BAR_W // 2, CENTER_Y - peak_h - 5, BAR_W, 5),
-                    border_radius=2,
-                )
-                pygame.draw.rect(
-                    screen, C_SHAPE,
-                    (cx - BAR_W // 2, CENTER_Y + peak_h, BAR_W, 5),
-                    border_radius=2,
-                )
+            # Top bar
+            sx = int(CX + bass_r * cos_a)
+            sy_t = int(CY - bass_r * sin_a)
+            ex = int(CX + (bass_r + bar_len) * cos_a)
+            ey_t = int(CY - (bass_r + bar_len) * sin_a)
+
+            if bar_len > 1:
+                pygame.draw.line(screen, C_SHAPE, (sx, sy_t), (ex, ey_t), BAR_W)
+                pygame.draw.circle(screen, C_SHAPE, (ex, ey_t), BAR_W // 2)
+
+            # Bottom mirror (skip the horizontal-axis bars to avoid duplicate)
+            if not on_axis and bar_len > 1:
+                sy_b = int(CY + bass_r * sin_a)
+                ey_b = int(CY + (bass_r + bar_len) * sin_a)
+                pygame.draw.line(screen, C_SHAPE, (sx, sy_b), (ex, ey_b), BAR_W)
+                pygame.draw.circle(screen, C_SHAPE, (ex, ey_b), BAR_W // 2)
+
+            # Peak dots (only when peak has separated from the bar)
+            if self._peaks[i] > self._bars[i] + 0.03:
+                px = int(CX + peak_r * cos_a)
+                py_t = int(CY - peak_r * sin_a)
+                pygame.draw.circle(screen, C_SHAPE, (px, py_t), PEAK_DOT_R)
+                if not on_axis:
+                    py_b = int(CY + peak_r * sin_a)
+                    pygame.draw.circle(screen, C_SHAPE, (px, py_b), PEAK_DOT_R)
+
+        # --- Bass circle drawn on top of bar roots for a clean join ---
+        pygame.draw.circle(screen, C_SHAPE, (CX, CY), bass_r)
 
         # CRT scanlines
         for y in range(0, H, 4):
