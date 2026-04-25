@@ -9,6 +9,13 @@ from core.config import W, H, C_BG_TOP, C_SHAPE, EXPRESSION_INTERVAL
 from core.modes.base import Mode
 
 
+def _blur_surf(surf: pygame.Surface, radius: int) -> pygame.Surface:
+    w, h = surf.get_size()
+    factor = max(2, radius)
+    small = pygame.transform.smoothscale(surf, (max(1, w // factor), max(1, h // factor)))
+    return pygame.transform.smoothscale(small, (w, h))
+
+
 def lerp(a, b, t):
     return a + (b - a) * t
 
@@ -117,7 +124,7 @@ class FaceMode(Mode):
         self.draw_rounded_rect(temp_surf, C_SHAPE, (cx + hg, cy + lR - rh, bw, bh), 12)
         pygame.draw.rect(temp_surf, C_SHAPE, (cx - hg - 2, cy - rh, (hg * 2) + 4, bh))
 
-        blurred = pygame.transform.gaussian_blur(temp_surf, 6)
+        blurred = _blur_surf(temp_surf, 6)
         liquid_mouth = pygame.mask.from_surface(blurred, threshold=140).to_surface(
             setcolor=C_SHAPE, unsetcolor=(0, 0, 0, 0)
         )
